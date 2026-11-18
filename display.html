@@ -172,6 +172,7 @@ function makeChannel(room, server, onMessage, onLink) {
   let lastErr = '';
   const players = new Map();
   let ch = null;
+  const T = Object.assign({ ready: 10000, verify: 1200 }, window.__vtTiming || {});   // ms
 
   const nextStop = (stops, t) => { for (const s of stops) if (s > t + 0.25) return s; return null; };
 
@@ -280,20 +281,30 @@ function makeChannel(room, server, onMessage, onLink) {
     } catch (e) {
       if (tk !== tok) return;
       stopWatch();
-      if (e && e.name === 'NotAllowedError') {
-        status = 'blocked';
-        retry = () => { const t2 = ++tok; startPlaying(t2, free, true); };
-        gateTitle.textContent = 'Click to continue';
-        gateMsg.textContent = 'The browser blocked automatic playback. One click and it carries on.';
-        gate.hidden = false;
-      } else {
-        status = 'paused';
-        lastErr = (e && (e.message || e.name)) || 'play failed';
-      }
+      if (e && e.name === 'NotAllowedError') return needGesture(free);
+      status = 'paused';
+      lastErr = (e && (e.message || e.name)) || 'play failed';
       publish();
       return;
     }
     if (tk !== tok) return;
+    publish();
+    // Some browsers refuse to start playback without saying so: check that it really started.
+    setTimeout(async () => {
+      if (tk !== tok || status !== 'playing') return;
+      let paused = false;
+      try { paused = await p.getPaused(); } catch (e) { return; }
+      if (tk === tok && status === 'playing' && paused) { stopWatch(); needGesture(free); }
+    }, T.verify);
+  }
+
+  // The browser would not start playback by itself: ask for one click on the display, then carry on.
+  function needGesture(free) {
+    status = 'blocked';
+    retry = () => { const t2 = ++tok; startPlaying(t2, free, true); };
+    gateTitle.textContent = 'Click to continue';
+    gateMsg.textContent = 'The browser blocked automatic playback. One click and it carries on.';
+    gate.hidden = false;
     publish();
   }
 
@@ -307,8 +318,17 @@ function makeChannel(room, server, onMessage, onLink) {
     const p = getPlayer(i);
     showFrame(i);
     publish();
-    try { await p.ready; } catch (e) { if (tk === tok) { status = 'error'; lastErr = 'could not load video'; publish(); } return; }
+    let loaded = false;
+    try {
+      loaded = await Promise.race([p.ready.then(() => true), new Promise(r => setTimeout(() => r(false), T.ready))]);
+    } catch (e) {}
     if (tk !== tok) return;
+    if (!loaded) {
+      status = 'error';
+      lastErr = 'the video did not load. Check its Vimeo embed privacy allows this website';
+      publish();
+      return;
+    }
     try { await p.player.setCurrentTime(0); } catch (e) {}
     if (tk !== tok) return;
     await startPlaying(tk, false, false);
