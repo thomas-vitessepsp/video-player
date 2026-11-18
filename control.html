@@ -55,8 +55,7 @@
   <div id="link"><span id="dot"></span><span id="linkText">Connecting…</span></div>
   <div id="now"><div id="nowTitle">—</div><div id="nowDetail"></div></div>
   <div class="grid">
-    <button class="btn big play"  data-cmd="play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play</button>
-    <button class="btn big pause" data-cmd="pause"><svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>Pause</button>
+    <button class="btn big wide play" id="toggle"><svg viewBox="0 0 24 24"><path id="toggleIcon" d="M8 5v14l11-7z"/></svg><span id="toggleLabel">Play</span></button>
     <button class="btn wide" data-cmd="rewind"><svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg><span id="rwLabel">Rewind 10 s</span></button>
     <button class="btn" data-cmd="restart"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>From the beginning</button>
     <button class="btn" data-cmd="restartfree"><svg viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>From the beginning, no pause</button>
@@ -190,6 +189,13 @@ function makeChannel(room, server, onMessage, onLink) {
   let state = null;        // last state message from the display
   let relayUp = false;
   let activeGuess = -1;    // row highlighted instantly when tapped, before the display confirms
+  let sending = false;     // a video was just tapped and the display has not confirmed yet
+  let optPlaying = null;   // what the Play/Pause button assumes right after a tap, until the display confirms
+
+  const toggle = $('toggle'), toggleIcon = $('toggleIcon'), toggleLabel = $('toggleLabel');
+  const ICON_PLAY = 'M8 5v14l11-7z', ICON_PAUSE = 'M6 5h4v14H6zM14 5h4v14h-4z';
+  const isPlaying = () => optPlaying !== null ? optPlaying
+    : !!(state && (state.status === 'playing' || state.status === 'loading'));
 
   // ---- video list -------------------------------------------------------
   const rows = cfg.videos.map((v, i) => {
@@ -204,6 +210,8 @@ function makeChannel(room, server, onMessage, onLink) {
       : 'Plays straight through';
     b.addEventListener('click', () => {
       activeGuess = i;
+      optPlaying = true;
+      sending = true;
       nowTitle.textContent = v.title;
       nowDetail.textContent = 'Sending…';
       send('select', { index: i });
@@ -230,6 +238,8 @@ function makeChannel(room, server, onMessage, onLink) {
   function onMessage(msg) {
     if (msg.type !== 'state') return;
     state = msg;
+    optPlaying = null;      // the display's own status now decides Play vs Pause
+    sending = false;
     activeGuess = msg.video;
     render();
   }
@@ -257,8 +267,8 @@ function makeChannel(room, server, onMessage, onLink) {
     else { dot.className = 'green'; linkText.textContent = 'Display connected'; }
 
     // now playing
-    const idx = state && state.video >= 0 ? state.video : activeGuess;
-    if (state && state.video >= 0) {
+    const idx = activeGuess;
+    if (state && state.video >= 0 && !sending) {
       nowTitle.textContent = state.title;
       nowDetail.textContent = describe(state);
     } else if (activeGuess < 0) {
@@ -269,10 +279,26 @@ function makeChannel(room, server, onMessage, onLink) {
       b.classList.toggle('active', i === idx);
       b.querySelector('.tag').hidden = i !== idx;
     });
+
+    // one button: shows Pause while playing, Play whenever paused or stopped at a stop point
+    const playing = isPlaying();
+    toggle.classList.toggle('pause', playing);
+    toggle.classList.toggle('play', !playing);
+    toggleIcon.setAttribute('d', playing ? ICON_PAUSE : ICON_PLAY);
+    toggleLabel.textContent = playing ? 'Pause' : 'Play';
   }
 
   // ---- buttons ----------------------------------------------------------
-  document.querySelectorAll('[data-cmd]').forEach(b => b.addEventListener('click', () => send(b.dataset.cmd)));
+  toggle.addEventListener('click', () => {
+    const playing = isPlaying();
+    send(playing ? 'pause' : 'play');
+    optPlaying = !playing;
+    render();
+  });
+  document.querySelectorAll('[data-cmd]').forEach(b => b.addEventListener('click', () => {
+    send(b.dataset.cmd);
+    if (b.dataset.cmd === 'restart' || b.dataset.cmd === 'restartfree') { optPlaying = true; render(); }
+  }));
   $('link').addEventListener('click', () => ch.send({ type: 'cmd', cmd: 'hello' }));
 
   // keep the phone awake while presenting
