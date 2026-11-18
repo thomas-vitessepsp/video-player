@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video display</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; color: #fff;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { cursor: none; }
+  [hidden] { display: none !important; }
+
+  #stage { position: fixed; inset: 0; }
+  .frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; visibility: hidden; }
+  .frame.active { visibility: visible; }
+
+  /* Transparent layer so nobody can click the Vimeo player and desync the remote */
+  #shield { position: fixed; inset: 0; z-index: 5; }
+
+  #idle { position: fixed; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center;
+    color: #2a2a2a; font-size: 2.2vmin; letter-spacing: .25em; text-transform: uppercase; }
+
+  #gate { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 1.1rem; background: #0b0b10; cursor: pointer; text-align: center; padding: 2rem; }
+  #gate .icon { width: 96px; height: 96px; border-radius: 50%; background: #1d2230; display: grid; place-items: center; }
+  #gate .icon svg { width: 44px; height: 44px; fill: #fff; margin-left: 5px; }
+  #gate h1 { margin: 0; font-size: clamp(1.6rem, 4vw, 2.6rem); font-weight: 600; }
+  #gate p { margin: 0; max-width: 38rem; color: #9aa3b5; font-size: clamp(1rem, 1.8vw, 1.2rem); line-height: 1.45; }
+  #gate small { color: #596074; font-size: .85rem; white-space: pre-line; }
+  #gate.error { cursor: default; }
+  #gate.error h1 { color: #ff8a80; }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div id="idle" hidden>Waiting for presenter</div>
+  <div id="shield"></div>
+
+  <div id="gate">
+    <div class="icon"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+    <h1 id="gateTitle">Click to start</h1>
+    <p id="gateMsg">Click once to go full screen and allow sound. After that, everything is controlled from the remote.</p>
+    <small id="gateInfo"></small>
+  </div>
+
+<script src="https://player.vimeo.com/api/player.js"></script>
+<script>
+// <shared> ------------------------------------------------------------------
+// Code shared by display.html and control.html (keep both copies identical).
+function parseTime(s) {
+  s = String(s).trim();
+  if (!s) return NaN;
+  if (s.indexOf(':') >= 0) {
+    const p = s.split(':').map(Number);
+    if (p.some(isNaN)) return NaN;
+    return p.reduce((a, v) => a * 60 + v, 0);
+  }
+  return Number(s);
+}
+
+function parseVimeo(url) {
+  const m = String(url).match(/vimeo\.com\/(?:video\/|channels\/[^\/]+\/|groups\/[^\/]+\/videos\/)?(\d+)(?:\/([0-9a-f]+))?/i);
+  if (!m) return null;
+  let hash = m[2] || null;
+  try { const h = new URL(url).searchParams.get('h'); if (h) hash = h; } catch (e) {}
+  return { id: m[1], hash: hash };
+}
+
+function parseConfig(text) {
+  const cfg = { room: '', server: 'https://ntfy.sh', rewind: 10, preload: true, videos: [], errors: [] };
+  const err = (n, msg) => cfg.errors.push('config.txt line ' + n + ': ' + msg);
+  text.split(/\r?\n/).forEach((raw, idx) => {
+    const n = idx + 1, line = raw.trim();
+    if (!line || line[0] === '#') return;
+    if (line[0] === '@') {
+      const i = line.indexOf('=');
+      if (i < 0) return err(n, 'a setting needs "name = value"');
+      const k = line.slice(1, i).trim().toLowerCase(), v = line.slice(i + 1).trim();
+      if (k === 'room') cfg.room = v;
+      else if (k === 'server') cfg.server = v.replace(/\/+$/, '');
+      else if (k === 'rewind') { const x = Number(v); if (x > 0) cfg.rewind = x; else err(n, 'rewind must be a positive number'); }
+      else if (k === 'preload') cfg.preload = /^(yes|true|1|on)$/i.test(v);
+      else err(n, 'unknown setting "' + k + '"');
+      return;
+    }
+    const parts = line.split('|').map(s => s.trim());
+    const ui = parts.findIndex(p => /vimeo\.com/i.test(p));
+    if (ui < 0) return err(n, 'no Vimeo link found');
+    const v = parseVimeo(parts[ui]);
+    if (!v) return err(n, 'could not read the Vimeo video id');
+    const title = parts.slice(0, ui).join(' | ') || ('Video ' + (cfg.videos.length + 1));
+    const stops = [];
+    parts.slice(ui + 1).join(',').split(/[,;\s]+/).filter(Boolean).forEach(tok => {
+      const t = parseTime(tok);
+      if (isNaN(t) || t <= 0) err(n, 'bad stop point "' + tok + '"'); else stops.push(t);
+    });
+    stops.sort((a, b) => a - b);
+    cfg.videos.push({ title: title, url: parts[ui], id: v.id, hash: v.hash, stops: Array.from(new Set(stops)) });
+  });
+  return cfg;
+}
+
+// Two pages talk through a public relay (ntfy.sh, plain HTTPS, works across networks).
+// BroadcastChannel is used in parallel so two tabs of one browser also work for testing.
+function makeChannel(room, server, onMessage, onLink) {
+  const topic = 'vremote-' + room.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 50);
+  const me = Math.random().toString(36).slice(2, 10);
+  const seen = new Set();
+  const deliver = msg => {
+    if (!msg || typeof msg !== 'object' || msg.from === me || !msg.mid || seen.has(msg.mid)) return;
+    seen.add(msg.mid);
+    if (seen.size > 300) seen.delete(seen.values().next().value);
+    onMessage(msg);
+  };
+  let bc = null;
+  try { bc = new BroadcastChannel(topic); bc.onmessage = e => deliver(e.data); } catch (e) {}
+  const es = new EventSource(server + '/' + topic + '/sse');
+  es.onopen = () => onLink && onLink(true);
+  es.onerror = () => onLink && onLink(false);
+  es.onmessage = ev => {
+    try { const d = JSON.parse(ev.data); if (d.event === 'message') deliver(JSON.parse(d.message)); } catch (e) {}
+  };
+  return {
+    send(obj) {
+      const msg = Object.assign({}, obj, { from: me, mid: me + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5) });
+      seen.add(msg.mid);
+      if (bc) { try { bc.postMessage(msg); } catch (e) {} }
+      fetch(server + '/' + topic, { method: 'POST', body: JSON.stringify(msg) }).catch(() => {});
+    }
+  };
+}
+// </shared> -----------------------------------------------------------------
+
+(async function main() {
+  const $ = id => document.getElementById(id);
+  const gate = $('gate'), gateTitle = $('gateTitle'), gateMsg = $('gateMsg'), gateInfo = $('gateInfo');
+  const stage = $('stage'), idle = $('idle');
+  let failed = false;
+
+  function fail(msg) {
+    failed = true;
+    gateTitle.textContent = 'Setup problem';
+    gateMsg.textContent = msg;
+    gate.classList.add('error');
+  }
+
+  // ---- load config ------------------------------------------------------
+  let cfg;
+  try {
+    const r = await fetch('config.txt?_=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    cfg = parseConfig(await r.text());
+  } catch (e) {
+    return fail('Could not load config.txt (' + e.message + '). Open this page from a web server (https://…), not straight from a file on disk.');
+  }
+  const room = new URLSearchParams(location.search).get('room') || cfg.room;
+  if (!room) return fail('config.txt has no "@room = …" line.');
+  if (!cfg.videos.length) return fail('config.txt does not contain any Vimeo videos.');
+  gateInfo.textContent = cfg.videos.length + ' video' + (cfg.videos.length === 1 ? '' : 's') + ' loaded' +
+    (cfg.errors.length ? '\n⚠ ' + cfg.errors.join('\n⚠ ') : '');
+
+  // ---- state ------------------------------------------------------------
+  let cur = -1;            // index of the video on screen
+  let mode = 'stops';      // 'stops' = pause at stop points, 'free' = play straight through
+  let target = null;       // the stop point we are currently playing towards
+  let status = 'idle';     // idle | loading | playing | paused | stopped | ended | blocked | error
+  let stopNo = 0;          // number of the stop we are sitting on (1-based)
+  let tok = 0;             // bumped by every command; lets older async work notice it was superseded
+  let poll = null;
+  let armed = false;       // true once someone clicked the start screen
+  let retry = null;        // what to redo when the browser blocked playback
+  let lastErr = '';
+  const players = new Map();
+  let ch = null;
+
+  const nextStop = (stops, t) => { for (const s of stops) if (s > t + 0.25) return s; return null; };
+
+  function publish(time) {
+    ch.send({
+      type: 'state', armed: armed, video: cur, title: cur >= 0 ? cfg.videos[cur].title : '',
+      status: status, mode: mode, stopNo: stopNo, stops: cur >= 0 ? cfg.videos[cur].stops.length : 0,
+      target: target, time: time == null ? null : time, err: lastErr
+    });
+  }
+
+  async function now() {
+    try { return await players.get(cur).player.getCurrentTime(); } catch (e) { return 0; }
+  }
+
+  function goFullscreen() {
+    const el = document.documentElement;
+    const f = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (f && !document.fullscreenElement && !document.webkitFullscreenElement) {
+      try { const r = f.call(el); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+    }
+  }
+
+  // ---- players ----------------------------------------------------------
+  function getPlayer(i) {
+    let p = players.get(i);
+    if (p) return p;
+    const v = cfg.videos[i];
+    const f = document.createElement('iframe');
+    f.className = 'frame';
+    f.allow = 'autoplay; fullscreen; picture-in-picture';
+    f.setAttribute('allowfullscreen', '');
+    const q = new URLSearchParams({ autopause: '0', controls: '0', title: '0', byline: '0', portrait: '0',
+      dnt: '1', playsinline: '1', keyboard: '0' });
+    if (v.hash) q.set('h', v.hash);
+    f.src = 'https://player.vimeo.com/video/' + v.id + '?' + q.toString();
+    stage.appendChild(f);
+    const player = new Vimeo.Player(f);
+    p = { player: player, frame: f, ready: player.ready() };
+    p.ready.catch(() => {});
+    player.on('ended', () => { if (i === cur) onEnded(); });
+    player.on('error', e => {
+      if (i !== cur) return;
+      stopWatch(); status = 'error'; lastErr = (e && (e.message || e.name)) || 'unknown'; publish();
+    });
+    players.set(i, p);
+    return p;
+  }
+
+  function showFrame(i) {
+    players.forEach((p, k) => p.frame.classList.toggle('active', k === i));
+    idle.hidden = true;
+  }
+
+  // ---- stop-point watcher -----------------------------------------------
+  function stopWatch() { if (poll) { clearInterval(poll); poll = null; } }
+
+  function startWatch(tk) {
+    stopWatch();
+    if (mode !== 'stops' || target == null) return;
+    const p = players.get(cur).player;
+    let busy = false;
+    poll = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const t = await p.getCurrentTime();
+        if (tk !== tok || status !== 'playing' || target == null) return;
+        if (t >= target - 0.04) {
+          stopWatch();
+          const hit = target;
+          status = 'stopped';
+          stopNo = cfg.videos[cur].stops.indexOf(hit) + 1;
+          target = null;
+          try { await p.pause(); } catch (e) {}
+          if (tk !== tok) return;
+          publish(hit);
+        }
+      } catch (e) {
+      } finally { busy = false; }
+    }, 40);
+  }
+
+  function onEnded() {
+    stopWatch(); status = 'ended'; target = null; publish();
+  }
+
+  // ---- playing ----------------------------------------------------------
+  // keep = true: continue towards the target we already have (used after a rewind)
+  async function startPlaying(tk, free, keep) {
+    const entry = players.get(cur);
+    if (!entry) return;
+    const p = entry.player;
+    if (!keep) {
+      let t = 0;
+      try { t = await p.getCurrentTime(); } catch (e) {}
+      if (tk !== tok) return;
+      mode = free ? 'free' : 'stops';
+      target = free ? null : nextStop(cfg.videos[cur].stops, t);
+    }
+    status = 'playing';
+    lastErr = '';
+    startWatch(tk);
+    try {
+      await p.play();
+    } catch (e) {
+      if (tk !== tok) return;
+      stopWatch();
+      if (e && e.name === 'NotAllowedError') {
+        status = 'blocked';
+        retry = () => { const t2 = ++tok; startPlaying(t2, free, true); };
+        gateTitle.textContent = 'Click to continue';
+        gateMsg.textContent = 'The browser blocked automatic playback. One click and it carries on.';
+        gate.hidden = false;
+      } else {
+        status = 'paused';
+        lastErr = (e && (e.message || e.name)) || 'play failed';
+      }
+      publish();
+      return;
+    }
+    if (tk !== tok) return;
+    publish();
+  }
+
+  // ---- commands ---------------------------------------------------------
+  async function cmdSelect(i) {
+    if (!Number.isInteger(i) || i < 0 || i >= cfg.videos.length) return;
+    const tk = ++tok;
+    stopWatch();
+    if (cur >= 0 && cur !== i && players.get(cur)) players.get(cur).player.pause().catch(() => {});
+    cur = i; status = 'loading'; stopNo = 0; target = null; lastErr = '';
+    const p = getPlayer(i);
+    showFrame(i);
+    publish();
+    try { await p.ready; } catch (e) { if (tk === tok) { status = 'error'; lastErr = 'could not load video'; publish(); } return; }
+    if (tk !== tok) return;
+    try { await p.player.setCurrentTime(0); } catch (e) {}
+    if (tk !== tok) return;
+    await startPlaying(tk, false, false);
+  }
+
+  async function cmdPlay() {
+    if (cur < 0) return;
+    if (status === 'playing' && mode === 'stops' && target != null) return; // already heading to the next stop
+    const tk = ++tok;
+    stopWatch();
+    if (status === 'ended') { try { await players.get(cur).player.setCurrentTime(0); } catch (e) {} if (tk !== tok) return; }
+    await startPlaying(tk, false, false);
+  }
+
+  async function cmdPause() {
+    if (cur < 0) return;
+    const tk = ++tok;
+    stopWatch();
+    const wasPlaying = status === 'playing' || status === 'loading';
+    try { await players.get(cur).player.pause(); } catch (e) {}
+    if (tk !== tok) return;
+    if (wasPlaying) status = 'paused';
+    publish(await now());
+  }
+
+  async function cmdRewind() {
+    if (cur < 0) return;
+    const tk = ++tok;
+    stopWatch();
+    const p = players.get(cur).player;
+    const was = status === 'playing';
+    let t = 0;
+    try { t = await p.getCurrentTime(); } catch (e) {}
+    const nt = Math.max(0, t - cfg.rewind);
+    try { await p.setCurrentTime(nt); } catch (e) {}
+    if (tk !== tok) return;
+    if (was) {
+      await startPlaying(tk, mode === 'free', true);     // keeps playing towards the same stop
+    } else {
+      status = 'paused'; stopNo = 0;
+      publish(nt);
+    }
+  }
+
+  async function cmdRestart(free) {
+    if (cur < 0) return;
+    const tk = ++tok;
+    stopWatch();
+    stopNo = 0;
+    try { await players.get(cur).player.setCurrentTime(0); } catch (e) {}
+    if (tk !== tok) return;
+    await startPlaying(tk, free, false);
+  }
+
+  function onMessage(msg) {
+    if (msg.type !== 'cmd') return;
+    if (msg.cmd === 'hello') return publish();
+    if (!armed) return publish();   // nobody has clicked the start screen yet: tell the remote
+    switch (msg.cmd) {
+      case 'select': return cmdSelect(msg.index);
+      case 'play': return cmdPlay();
+      case 'pause': return cmdPause();
+      case 'rewind': return cmdRewind();
+      case 'restart': return cmdRestart(false);
+      case 'restartfree': return cmdRestart(true);
+    }
+  }
+
+  // ---- start screen / fullscreen ----------------------------------------
+  gate.addEventListener('click', () => {
+    if (failed) return;
+    goFullscreen();
+    gate.hidden = true;
+    if (!armed) {
+      armed = true;
+      idle.hidden = cur >= 0;
+      if (cfg.preload) cfg.videos.forEach((_, i) => getPlayer(i));
+      publish();
+    }
+    if (retry) { const r = retry; retry = null; r(); }
+  });
+  $('shield').addEventListener('click', goFullscreen);
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('keydown', e => { if (e.key === 'f' || e.key === 'F') goFullscreen(); });
+
+  ch = makeChannel(room, cfg.server, onMessage, up => { if (up) publish(); });
+})();
+</script>
+</body>
+</html>

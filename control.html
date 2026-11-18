@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e1015">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Video remote</title>
+<style>
+  :root { --bg:#0e1015; --card:#1a1d26; --card2:#232734; --line:#262b38; --text:#f2f4f8; --muted:#8d95a6;
+    --green:#25a86b; --amber:#e29a1f; --blue:#4b8bff; --red:#ef5350; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100dvh; padding-bottom: calc(24px + env(safe-area-inset-bottom)); user-select: none; -webkit-user-select: none; }
+  [hidden] { display: none !important; }
+
+  #top { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
+    padding: calc(10px + env(safe-area-inset-top)) 14px 12px; }
+  #link { display: flex; align-items: center; gap: 8px; font-size: .8rem; color: var(--muted); min-height: 20px; }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); flex: none; }
+  #dot.amber { background: var(--amber); } #dot.green { background: var(--green); }
+  #now { margin: 6px 0 10px; }
+  #nowTitle { font-size: 1.15rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #nowDetail { font-size: .9rem; color: var(--muted); margin-top: 2px; min-height: 1.2em; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn { border: 0; border-radius: 16px; color: #fff; font: inherit; font-size: 1.02rem; font-weight: 650;
+    display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 54px; padding: 0 12px;
+    background: var(--card2); touch-action: manipulation; cursor: pointer; text-align: center; line-height: 1.15; }
+  .btn svg { width: 24px; height: 24px; fill: currentColor; flex: none; }
+  .btn:active { transform: scale(.97); filter: brightness(1.25); }
+  .btn.big { min-height: 82px; font-size: 1.25rem; }
+  .btn.play { background: var(--green); } .btn.pause { background: var(--amber); color: #1b1300; }
+  .btn.wide { grid-column: 1 / -1; }
+
+  main { padding: 16px 14px 0; }
+  h2 { margin: 0 0 10px; font-size: .8rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  #warn { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; background: #3a2a12; color: #ffd28a; font-size: .85rem; white-space: pre-line; }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .row { width: 100%; border: 2px solid transparent; border-radius: 16px; background: var(--card); color: var(--text); font: inherit;
+    display: flex; align-items: center; gap: 12px; padding: 12px 14px; text-align: left; min-height: 64px; cursor: pointer; touch-action: manipulation; }
+  .row:active { filter: brightness(1.3); }
+  .row .n { width: 34px; height: 34px; border-radius: 50%; background: var(--card2); display: grid; place-items: center; font-weight: 650; flex: none; }
+  .row .t { flex: 1; min-width: 0; font-weight: 600; }
+  .row .t span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .t small { display: block; margin-top: 2px; font-weight: 400; color: var(--muted); font-size: .8rem; }
+  .row .tag { font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--blue); }
+  .row.active { border-color: var(--blue); background: #172036; }
+  .row.active .n { background: var(--blue); }
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="link"><span id="dot"></span><span id="linkText">Connecting…</span></div>
+  <div id="now"><div id="nowTitle">—</div><div id="nowDetail"></div></div>
+  <div class="grid">
+    <button class="btn big play"  data-cmd="play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play</button>
+    <button class="btn big pause" data-cmd="pause"><svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>Pause</button>
+    <button class="btn wide" data-cmd="rewind"><svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg><span id="rwLabel">Rewind 10 s</span></button>
+    <button class="btn" data-cmd="restart"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>From the beginning</button>
+    <button class="btn" data-cmd="restartfree"><svg viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>From the beginning, no pause</button>
+  </div>
+</div>
+
+<main>
+  <div id="warn" hidden></div>
+  <h2>Videos</h2>
+  <ul id="list"></ul>
+</main>
+
+<script>
+// <shared> ------------------------------------------------------------------
+// Code shared by display.html and control.html (keep both copies identical).
+function parseTime(s) {
+  s = String(s).trim();
+  if (!s) return NaN;
+  if (s.indexOf(':') >= 0) {
+    const p = s.split(':').map(Number);
+    if (p.some(isNaN)) return NaN;
+    return p.reduce((a, v) => a * 60 + v, 0);
+  }
+  return Number(s);
+}
+
+function parseVimeo(url) {
+  const m = String(url).match(/vimeo\.com\/(?:video\/|channels\/[^\/]+\/|groups\/[^\/]+\/videos\/)?(\d+)(?:\/([0-9a-f]+))?/i);
+  if (!m) return null;
+  let hash = m[2] || null;
+  try { const h = new URL(url).searchParams.get('h'); if (h) hash = h; } catch (e) {}
+  return { id: m[1], hash: hash };
+}
+
+function parseConfig(text) {
+  const cfg = { room: '', server: 'https://ntfy.sh', rewind: 10, preload: true, videos: [], errors: [] };
+  const err = (n, msg) => cfg.errors.push('config.txt line ' + n + ': ' + msg);
+  text.split(/\r?\n/).forEach((raw, idx) => {
+    const n = idx + 1, line = raw.trim();
+    if (!line || line[0] === '#') return;
+    if (line[0] === '@') {
+      const i = line.indexOf('=');
+      if (i < 0) return err(n, 'a setting needs "name = value"');
+      const k = line.slice(1, i).trim().toLowerCase(), v = line.slice(i + 1).trim();
+      if (k === 'room') cfg.room = v;
+      else if (k === 'server') cfg.server = v.replace(/\/+$/, '');
+      else if (k === 'rewind') { const x = Number(v); if (x > 0) cfg.rewind = x; else err(n, 'rewind must be a positive number'); }
+      else if (k === 'preload') cfg.preload = /^(yes|true|1|on)$/i.test(v);
+      else err(n, 'unknown setting "' + k + '"');
+      return;
+    }
+    const parts = line.split('|').map(s => s.trim());
+    const ui = parts.findIndex(p => /vimeo\.com/i.test(p));
+    if (ui < 0) return err(n, 'no Vimeo link found');
+    const v = parseVimeo(parts[ui]);
+    if (!v) return err(n, 'could not read the Vimeo video id');
+    const title = parts.slice(0, ui).join(' | ') || ('Video ' + (cfg.videos.length + 1));
+    const stops = [];
+    parts.slice(ui + 1).join(',').split(/[,;\s]+/).filter(Boolean).forEach(tok => {
+      const t = parseTime(tok);
+      if (isNaN(t) || t <= 0) err(n, 'bad stop point "' + tok + '"'); else stops.push(t);
+    });
+    stops.sort((a, b) => a - b);
+    cfg.videos.push({ title: title, url: parts[ui], id: v.id, hash: v.hash, stops: Array.from(new Set(stops)) });
+  });
+  return cfg;
+}
+
+// Two pages talk through a public relay (ntfy.sh, plain HTTPS, works across networks).
+// BroadcastChannel is used in parallel so two tabs of one browser also work for testing.
+function makeChannel(room, server, onMessage, onLink) {
+  const topic = 'vremote-' + room.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 50);
+  const me = Math.random().toString(36).slice(2, 10);
+  const seen = new Set();
+  const deliver = msg => {
+    if (!msg || typeof msg !== 'object' || msg.from === me || !msg.mid || seen.has(msg.mid)) return;
+    seen.add(msg.mid);
+    if (seen.size > 300) seen.delete(seen.values().next().value);
+    onMessage(msg);
+  };
+  let bc = null;
+  try { bc = new BroadcastChannel(topic); bc.onmessage = e => deliver(e.data); } catch (e) {}
+  const es = new EventSource(server + '/' + topic + '/sse');
+  es.onopen = () => onLink && onLink(true);
+  es.onerror = () => onLink && onLink(false);
+  es.onmessage = ev => {
+    try { const d = JSON.parse(ev.data); if (d.event === 'message') deliver(JSON.parse(d.message)); } catch (e) {}
+  };
+  return {
+    send(obj) {
+      const msg = Object.assign({}, obj, { from: me, mid: me + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5) });
+      seen.add(msg.mid);
+      if (bc) { try { bc.postMessage(msg); } catch (e) {} }
+      fetch(server + '/' + topic, { method: 'POST', body: JSON.stringify(msg) }).catch(() => {});
+    }
+  };
+}
+// </shared> -----------------------------------------------------------------
+
+(async function main() {
+  const $ = id => document.getElementById(id);
+  const list = $('list'), warn = $('warn'), dot = $('dot'), linkText = $('linkText');
+  const nowTitle = $('nowTitle'), nowDetail = $('nowDetail');
+
+  const fmt = s => {
+    s = Math.max(0, s || 0);
+    const m = Math.floor(s / 60), r = Math.floor(s % 60);
+    return m + ':' + String(r).padStart(2, '0');
+  };
+
+  // ---- config -----------------------------------------------------------
+  let cfg;
+  try {
+    const r = await fetch('config.txt?_=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    cfg = parseConfig(await r.text());
+  } catch (e) {
+    warn.hidden = false;
+    warn.textContent = 'Could not load config.txt (' + e.message + '). Open this page from a web server (https://…), not straight from a file on disk.';
+    return;
+  }
+  const room = new URLSearchParams(location.search).get('room') || cfg.room;
+  const problems = cfg.errors.slice();
+  if (!room) problems.push('config.txt has no "@room = …" line.');
+  if (!cfg.videos.length) problems.push('config.txt does not contain any Vimeo videos.');
+  if (problems.length) { warn.hidden = false; warn.textContent = problems.join('\n'); }
+  if (!room || !cfg.videos.length) return;
+  $('rwLabel').textContent = 'Rewind ' + cfg.rewind + ' s';
+
+  // ---- state ------------------------------------------------------------
+  let state = null;        // last state message from the display
+  let relayUp = false;
+  let activeGuess = -1;    // row highlighted instantly when tapped, before the display confirms
+
+  // ---- video list -------------------------------------------------------
+  const rows = cfg.videos.map((v, i) => {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.className = 'row';
+    b.innerHTML = '<span class="n"></span><span class="t"><span></span><small></small></span><span class="tag" hidden>Now</span>';
+    b.querySelector('.n').textContent = i + 1;
+    b.querySelector('.t > span').textContent = v.title;
+    b.querySelector('small').textContent = v.stops.length
+      ? 'Stops at ' + v.stops.map(fmt).join(' · ')
+      : 'Plays straight through';
+    b.addEventListener('click', () => {
+      activeGuess = i;
+      nowTitle.textContent = v.title;
+      nowDetail.textContent = 'Sending…';
+      send('select', { index: i });
+      render();
+    });
+    li.appendChild(b);
+    list.appendChild(li);
+    return b;
+  });
+
+  // ---- messaging --------------------------------------------------------
+  const ch = makeChannel(room, cfg.server, onMessage, up => {
+    const wasUp = relayUp;
+    relayUp = up;
+    if (up && !wasUp) ch.send({ type: 'cmd', cmd: 'hello' });   // ask the display for its state
+    render();
+  });
+
+  function send(cmd, extra) {
+    ch.send(Object.assign({ type: 'cmd', cmd: cmd }, extra || {}));
+    if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) {} }
+  }
+
+  function onMessage(msg) {
+    if (msg.type !== 'state') return;
+    state = msg;
+    activeGuess = msg.video;
+    render();
+  }
+
+  function describe(s) {
+    switch (s.status) {
+      case 'loading': return 'Loading…';
+      case 'playing':
+        if (s.mode === 'free') return 'Playing, no pauses';
+        return s.target != null ? 'Playing → next stop at ' + fmt(s.target) : 'Playing to the end';
+      case 'stopped': return 'Stopped at ' + fmt(s.time) + ' · stop ' + s.stopNo + ' of ' + s.stops;
+      case 'paused': return 'Paused' + (s.time != null ? ' at ' + fmt(s.time) : '');
+      case 'ended': return 'Finished';
+      case 'blocked': return 'Browser blocked playback: click once on the display';
+      case 'error': return 'Player error: ' + (s.err || 'unknown');
+      default: return 'Ready: pick a video';
+    }
+  }
+
+  function render() {
+    // connection line
+    if (!relayUp) { dot.className = ''; linkText.textContent = 'No connection to the relay: check your internet'; }
+    else if (!state) { dot.className = 'amber'; linkText.textContent = 'Waiting for the display page… (tap here to retry)'; }
+    else if (!state.armed) { dot.className = 'amber'; linkText.textContent = 'Display is open: click on it once to start'; }
+    else { dot.className = 'green'; linkText.textContent = 'Display connected'; }
+
+    // now playing
+    const idx = state && state.video >= 0 ? state.video : activeGuess;
+    if (state && state.video >= 0) {
+      nowTitle.textContent = state.title;
+      nowDetail.textContent = describe(state);
+    } else if (activeGuess < 0) {
+      nowTitle.textContent = '—';
+      nowDetail.textContent = state ? describe(state) : '';
+    }
+    rows.forEach((b, i) => {
+      b.classList.toggle('active', i === idx);
+      b.querySelector('.tag').hidden = i !== idx;
+    });
+  }
+
+  // ---- buttons ----------------------------------------------------------
+  document.querySelectorAll('[data-cmd]').forEach(b => b.addEventListener('click', () => send(b.dataset.cmd)));
+  $('link').addEventListener('click', () => ch.send({ type: 'cmd', cmd: 'hello' }));
+
+  // keep the phone awake while presenting
+  let wl = null;
+  async function keepAwake() {
+    try {
+      if ('wakeLock' in navigator && !wl) {
+        wl = await navigator.wakeLock.request('screen');
+        wl.addEventListener('release', () => { wl = null; });
+      }
+    } catch (e) {}
+  }
+  document.addEventListener('pointerdown', keepAwake, { once: true });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') { keepAwake(); ch.send({ type: 'cmd', cmd: 'hello' }); }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

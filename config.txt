@@ -1,0 +1,31 @@
+# ====================================================================
+#  Presenter video remote - configuration
+#  Read by BOTH pages (display.html and control.html).
+#  After editing, reload both pages.
+# ====================================================================
+# Lines starting with # are comments. Blank lines are ignored.
+#
+# SETTINGS (optional, one per line, start with @)
+#   @room    = a secret name that pairs the two pages. Treat it like a
+#              password: keep it long and random, and change it if shared.
+#   @rewind  = seconds the Rewind button jumps back (default 10)
+#   @preload = yes / no. "yes" loads every video in the background so
+#              switching between videos is instant (default yes)
+#   @server  = relay server (default https://ntfy.sh). Only change this
+#              if you run your own ntfy server.
+#
+# VIDEOS (one per line, in the order they appear on the remote)
+#   Title | Vimeo link | stop points
+#
+#   Stop points are the moments where playback pauses. Write them as
+#   seconds (14) or mm:ss (0:14), separated by commas. Leave the stop
+#   list empty to play that video straight through.
+#   The title is optional: a line with just a Vimeo link works too.
+# ====================================================================
+
+@room = vplay-k7q2m9x4tb8w
+@rewind = 10
+@preload = yes
+
+Video 1 | https://vimeo.com/1247986698/a24396af90?fl=ip&fe=ec&share=copy | 00:05, 00:14
+Video 2 | https://vimeo.com/1247985148/3ed28ef272?fl=ip&fe=ec&share=copy | 00:05, 00:14
