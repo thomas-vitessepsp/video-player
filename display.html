@@ -329,9 +329,13 @@ function makeChannel(room, server, onMessage, onLink) {
       publish();
       return;
     }
+    // Selecting a video only loads it, parked on its first frame. The presenter presses Play to start.
+    try { await p.player.pause(); } catch (e) {}
     try { await p.player.setCurrentTime(0); } catch (e) {}
     if (tk !== tok) return;
-    await startPlaying(tk, false, false);
+    status = 'ready';
+    target = nextStop(cfg.videos[cur].stops, 0);
+    publish(0);
   }
 
   async function cmdPlay() {
