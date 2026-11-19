@@ -196,7 +196,7 @@ function makeChannel(room, server, onMessage, onLink) {
   const toggle = $('toggle'), toggleIcon = $('toggleIcon'), toggleLabel = $('toggleLabel');
   const ICON_PLAY = 'M8 5v14l11-7z', ICON_PAUSE = 'M6 5h4v14H6zM14 5h4v14h-4z';
   const isPlaying = () => optPlaying !== null ? optPlaying
-    : !!(state && (state.status === 'playing' || state.status === 'loading'));
+    : !!(state && state.status === 'playing');
 
   // ---- video list -------------------------------------------------------
   const rows = cfg.videos.map((v, i) => {
