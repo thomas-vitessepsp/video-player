@@ -27,5 +27,6 @@
 @rewind = 10
 @preload = yes
 
-Portal Intro | https://vimeo.com/1247986698/a24396af90 | 00:05, 00:14
-Dynamic Risk Sharing | https://vimeo.com/1247985148/3ed28ef272 | 00:05, 00:14
+Portal Intro | https://vimeo.com/1247986698/a24396af90 | 00:05,02:00
+Dynamic Risk Sharing | https://vimeo.com/1247985148/3ed28ef272 | 00:05
+Recoveries | https://vimeo.com/1248382941/a835572be9 | 00:05
